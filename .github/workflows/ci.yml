@@ -47,3 +47,5 @@ jobs:
 
       - name: Run tests
         run: pytest -v --cov=app --cov-report=term-missing --cov-fail-under=85
+      - name: Build Docker image
+        run: docker build -t wildlife-trace-api:test .
