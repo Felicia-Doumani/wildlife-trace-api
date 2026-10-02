@@ -27,3 +27,11 @@ class SightingResponse(BaseModel):
     photo_url: HttpUrl | None
     notes: str | None
     created_at: datetime
+
+class SightingUpdate(BaseModel):
+    species: str | None = Field(default=None, min_length=1, max_length=100)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    observed_at: datetime | None = None
+    photo_url: HttpUrl | None = None
+    notes: str | None = None

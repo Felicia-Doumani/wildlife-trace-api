@@ -42,5 +42,19 @@ services:
   redis:
     image: redis:7-alpine
 
+  worker:
+    build: .
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+psycopg://wildtrace:wildtrace@db:5432/wildtrace
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app
+
 volumes:
   pgdata:
