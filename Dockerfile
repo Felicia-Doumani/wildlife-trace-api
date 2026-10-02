@@ -9,6 +9,8 @@ WORKDIR /app
 RUN useradd --create-home appuser
 COPY --from=builder /app/.venv ./.venv
 COPY app ./app
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1
 USER appuser
