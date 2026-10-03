@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
+from unittest.mock import patch
 from app.database import Base, get_db
 from app.main import app
 
@@ -44,3 +44,8 @@ def client():
 
     app.dependency_overrides.clear()
     Base.metadata.drop_all(bind=test_engine)
+
+@pytest.fixture(autouse=True)
+def mock_process_sighting():
+    with patch("app.routers.sightings.process_sighting.delay") as mock_delay:
+        yield mock_delay

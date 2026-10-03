@@ -4,8 +4,7 @@ def test_list_sightings_empty(client):
     assert response.status_code == 200
     assert response.json() == []
 
-
-def test_create_sighting(client):
+def test_create_sighting(client, mock_process_sighting):
     payload = {
         "species": "Mediterranean monk seal",
         "latitude": 37.75,
@@ -16,6 +15,9 @@ def test_create_sighting(client):
     }
 
     response = client.post("/api/v1/sightings", json=payload)
+
+    sighting_id = response.json()["id"]
+    mock_process_sighting.assert_called_once_with(sighting_id)
 
     assert response.status_code == 201
 
