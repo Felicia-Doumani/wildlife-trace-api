@@ -61,7 +61,7 @@ jobs:
         run: docker build -t wildlife-trace-api:test .
 
       - name: Scan Docker image
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: wildlife-trace-api:test
           format: table
