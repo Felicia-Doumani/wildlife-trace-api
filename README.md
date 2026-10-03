@@ -1,81 +1,118 @@
 # WildTrace API
 
-WildTrace is a containerized REST API for recording and retrieving wildlife sightings.
+WildTrace is a containerized REST API for recording, managing, and retrieving wildlife sightings.
 
-The project is built as a production-style backend and DevOps application with a focus on API development, containerization, automated testing, database migrations, asynchronous task processing, code quality, security checks, and CI/CD practices.
+The project is built as a backend and DevOps portfolio project demonstrating the complete path from application development to automated testing, containerization, security scanning, container publishing, and cloud deployment.
+
+WildTrace is currently deployed on **AWS EC2**, where the API, PostgreSQL database, Redis broker, and Celery worker run as separate Docker containers.
+
+---
 
 ## Tech Stack
 
-- **Python 3.12**
-- **FastAPI** — REST API framework
-- **PostgreSQL 16** — relational database
-- **SQLAlchemy 2.0** — ORM and database access
-- **Alembic** — database migrations
-- **Pydantic** — request and response validation
-- **Redis 7** — message broker for asynchronous task processing
-- **Celery** — background task processing
-- **Docker & Docker Compose** — containerized development and multi-service environment
-- **Pytest** — automated testing
-- **Ruff** — linting
-- **pip-audit** — Python dependency vulnerability scanning
-- **GitHub Actions** — continuous integration
+### Backend
+
+- Python 3.12
+- FastAPI
+- Pydantic
+- SQLAlchemy 2.0
+- Psycopg 3
+- PostgreSQL 16
+- Alembic
+
+### Background Processing
+
+- Redis 7
+- Celery
+
+### Testing & Code Quality
+
+- Pytest
+- pytest-cov
+- Ruff
+
+### Security
+
+- pip-audit
+- Trivy
+
+### DevOps & Infrastructure
+
+- Docker
+- Docker Compose
+- GitHub Actions
+- GitHub Container Registry (GHCR)
+- AWS EC2
+- AWS EBS
+- AWS Security Groups
+
+---
 
 ## Features
 
-WildTrace currently provides:
+WildTrace currently supports:
 
-- Create wildlife sightings
-- Retrieve all sightings
-- Retrieve individual sightings by ID
-- Update existing sightings
-- Delete sightings
-- Filter sightings by species
-- Filter sightings by observation date range
-- Pagination with `skip` and `limit`
-- Input validation for coordinates, URLs, dates, and required fields
+- Creating wildlife sightings
+- Retrieving all sightings
+- Retrieving individual sightings by ID
+- Updating existing sightings
+- Deleting sightings
+- Filtering sightings by species
+- Filtering sightings by observation date range
+- Pagination using `skip` and `limit`
+- Request and response validation
 - PostgreSQL persistence
-- Versioned database migrations with Alembic
-- Redis-backed asynchronous task queue
-- Separate Celery background worker
+- Version-controlled database migrations
+- Redis-backed asynchronous task queuing
+- Celery background processing
 - Health and readiness endpoints
-- Dockerized multi-service infrastructure
 - Automated API testing
 - Test coverage enforcement
 - Automated linting
 - Dependency vulnerability scanning
-- Automated Docker image builds in CI
+- Container vulnerability scanning
+- Automated Docker image builds
+- Versioned container publishing
+- AWS cloud deployment
 
-## Architecture
+---
 
-WildTrace runs as a multi-service application:
+# Architecture
+
+The deployed WildTrace architecture currently consists of four containerized services running on an AWS EC2 instance.
 
 ```text
-                     ┌──────────────┐
-                     │    Client    │
-                     └──────┬───────┘
-                            │ HTTP
-                            ▼
-                     ┌──────────────┐
-                     │   FastAPI    │
-                     └──────┬───────┘
+                         Internet
                             │
-                 ┌──────────┴──────────┐
-                 ▼                     ▼
-          ┌──────────────┐      ┌──────────────┐
-          │  PostgreSQL  │      │    Redis     │
-          └──────────────┘      └──────┬───────┘
-                                      │
-                                      ▼
-                               ┌──────────────┐
-                               │Celery Worker │
-                               └──────────────┘
+                            ▼
+                       AWS EC2
+                            │
+                      Docker Engine
+                            │
+           ┌────────────────┼────────────────┐
+           │                │                │
+           ▼                ▼                ▼
+       FastAPI          PostgreSQL         Redis
+           │                                 │
+           │                                 ▼
+           └──────────────────────────► Celery Worker
 ```
 
-When a sighting is created, FastAPI stores the record in PostgreSQL and queues a background processing task through Redis. A separate Celery worker consumes and executes the task asynchronously.
+The FastAPI application handles HTTP requests and communicates with PostgreSQL through SQLAlchemy.
 
-The API and Celery worker run as separate Docker services while sharing the same application code and Docker image.
+When a sighting is created:
 
-## Sighting Model
+1. FastAPI validates the incoming request.
+2. SQLAlchemy persists the sighting to PostgreSQL.
+3. The database transaction is committed.
+4. FastAPI sends a background task to Redis.
+5. The Celery worker consumes and processes the task.
+
+The API and Celery worker use the same WildTrace Docker image but run as separate containers with different commands and responsibilities.
+
+---
+
+# Sighting Model
 
 Each wildlife sighting contains:
 
@@ -90,25 +127,45 @@ Each wildlife sighting contains:
 | `notes` | Optional observation notes |
 | `created_at` | Time the record was created |
 
-## API Endpoints
+---
 
-### Health
+# API Endpoints
+
+## Health
 
 ```http
 GET /healthz
 ```
 
-Checks whether the API process is running.
+Checks whether the FastAPI application is running.
+
+Example response:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+## Readiness
 
 ```http
 GET /readyz
 ```
 
-Checks whether the API can connect to PostgreSQL.
+Checks whether the application is ready and can communicate with PostgreSQL.
 
-### Sightings
+Example response:
 
-Create a sighting:
+```json
+{
+  "status": "ready"
+}
+```
+
+---
+
+## Create a Sighting
 
 ```http
 POST /api/v1/sightings
@@ -127,118 +184,161 @@ Example request:
 }
 ```
 
-Retrieve sightings:
+Creating a sighting also queues a background processing task through Redis and Celery.
+
+---
+
+## Retrieve Sightings
 
 ```http
 GET /api/v1/sightings
 ```
 
-Filtering and pagination are supported through query parameters such as:
-
-```http
-GET /api/v1/sightings?species=seal
-```
-
-```http
-GET /api/v1/sightings?observed_from=2026-10-01T00:00:00Z&observed_to=2026-10-31T23:59:59Z
-```
+### Pagination
 
 ```http
 GET /api/v1/sightings?skip=0&limit=20
 ```
 
-Retrieve a specific sighting:
+### Species filtering
+
+```http
+GET /api/v1/sightings?species=seal
+```
+
+### Observation date filtering
+
+```http
+GET /api/v1/sightings?observed_from=2026-10-01T00:00:00Z&observed_to=2026-10-31T23:59:59Z
+```
+
+Filtering and pagination parameters can be combined.
+
+---
+
+## Retrieve a Sighting
 
 ```http
 GET /api/v1/sightings/{sighting_id}
 ```
 
-Update a sighting:
+Requests for nonexistent sightings return:
+
+```text
+404 Not Found
+```
+
+---
+
+## Update a Sighting
 
 ```http
 PATCH /api/v1/sightings/{sighting_id}
 ```
 
-Delete a sighting:
+PATCH supports partial updates, allowing individual fields to be modified without replacing the entire sighting.
+
+---
+
+## Delete a Sighting
 
 ```http
 DELETE /api/v1/sightings/{sighting_id}
 ```
 
-A request for a nonexistent sighting returns `404 Not Found`.
+Successful deletion returns:
 
-## Running Locally
+```text
+204 No Content
+```
 
-### Requirements
+---
+
+# Local Development
+
+## Requirements
 
 Install:
 
 - Docker
 - Docker Compose
 
-Clone the repository and start the services:
+Clone the repository:
 
 ```bash
 git clone <repository-url>
 cd wildtrace
+```
+
+Build and start the local environment:
+
+```bash
 docker compose up --build -d
 ```
 
-Docker Compose starts:
+The local Docker Compose environment includes:
 
-- FastAPI application
-- PostgreSQL development database
-- PostgreSQL test database
-- Redis
-- Celery worker
+```text
+api
+db
+test-db
+redis
+worker
+```
 
-Check running services:
+Check the services:
 
 ```bash
 docker compose ps
 ```
 
-The API is available at:
+The API is available locally at:
 
 ```text
 http://localhost:8000
 ```
 
-FastAPI's interactive API documentation is available at:
+Interactive FastAPI documentation:
 
 ```text
 http://localhost:8000/docs
 ```
 
-## Background Processing
+---
 
-WildTrace uses Redis and Celery for asynchronous background task processing.
+# Background Processing
 
-When a sighting is successfully created and committed to PostgreSQL, the API queues a Celery task:
+WildTrace uses Redis and Celery for asynchronous background processing.
 
 ```text
 POST /api/v1/sightings
-        │
-        ▼
-     FastAPI
-        │
-        ▼
-   PostgreSQL
-        │
-        ▼
-      Redis
-        │
-        ▼
- Celery Worker
+          │
+          ▼
+       FastAPI
+          │
+          ▼
+      PostgreSQL
+          │
+       commit
+          │
+          ▼
+        Redis
+          │
+          ▼
+    Celery Worker
 ```
 
-This separates HTTP request handling from work that can be performed independently by a background worker.
+The sighting is committed to PostgreSQL before the background task is queued. This prevents the worker from receiving an ID for a database record that has not yet been committed.
 
-During automated API tests, Celery task dispatch is mocked. This keeps the test suite independent of Redis and the worker while still verifying that sighting creation queues the expected background task.
+During automated API tests, Celery task dispatch is mocked. This keeps the API test suite independent of Redis and Celery while still verifying that the expected background task is dispatched.
 
-## Database Migrations
+---
 
-Database schema changes are managed with Alembic rather than being created automatically when the API starts.
+# Database Migrations
+
+WildTrace uses Alembic for database schema management.
+
+The application does not rely on automatic table creation during startup.
 
 Apply all migrations:
 
@@ -252,23 +352,45 @@ Check the current migration:
 docker compose exec api alembic current
 ```
 
-Create a migration after changing the SQLAlchemy models:
+Create a migration after modifying the SQLAlchemy models:
 
 ```bash
 docker compose exec api alembic revision --autogenerate -m "describe change"
 ```
 
-Generated migrations are stored under:
+Migration files are stored in:
 
 ```text
 alembic/versions/
 ```
 
-## Testing
+The initial sightings migration is:
 
-WildTrace has automated API tests covering CRUD operations, validation, filtering, and background task dispatch.
+```text
+e933e80caa48
+```
 
-Run the tests locally:
+Database migrations are also executed during continuous integration.
+
+---
+
+# Testing
+
+WildTrace includes automated tests covering the API and its main behavior.
+
+Current test coverage includes:
+
+- Sighting creation
+- Sighting retrieval
+- Updates
+- Deletion
+- Request validation
+- Species filtering
+- Observation date filtering
+- Health endpoint behavior
+- Celery task dispatch
+
+Run the tests:
 
 ```bash
 pytest -v
@@ -280,71 +402,417 @@ Run tests with coverage:
 pytest -v --cov=app --cov-report=term-missing
 ```
 
-The CI pipeline requires at least **85% test coverage**.
+The CI pipeline requires a minimum of:
 
-## Code Quality
+```text
+85% coverage
+```
 
-Run Ruff:
+---
+
+# Code Quality
+
+WildTrace uses Ruff for automated Python linting.
+
+Run it locally:
 
 ```bash
 ruff check .
 ```
 
-Ruff is executed automatically by the CI pipeline to detect Python code-quality issues before changes are accepted.
+Ruff is also executed automatically by GitHub Actions.
 
-## Security
+---
 
-Python dependencies can be checked for known vulnerabilities with:
+# Security
+
+WildTrace performs security checks at both the Python dependency and container image levels.
+
+## Dependency Scanning
+
+Python dependencies are checked for known vulnerabilities using:
 
 ```bash
 pip-audit -r requirements.txt
 ```
 
-Dependency auditing is also performed automatically by the CI pipeline.
+## Container Scanning
 
-Container image vulnerability scanning is planned as the next security step.
+The final Docker image is scanned using **Trivy**.
 
-## Continuous Integration
+Trivy checks components contained in the final image, including operating-system packages and application dependencies, for known vulnerabilities.
 
-GitHub Actions automatically validates pushes and pull requests.
+The CI pipeline is configured to fail when qualifying critical vulnerabilities are detected.
 
-The current pipeline performs:
+This means the container image is security-scanned before being published for deployment.
 
-1. Dependency installation
-2. Database migration execution
-3. Ruff linting
-4. Python dependency vulnerability scanning
-5. Pytest execution
-6. Coverage enforcement
-7. Docker image build
+---
 
-A failed migration, quality, test, security, or build check causes the workflow to fail.
+# Docker
 
-## Project Structure
+WildTrace uses a multi-stage Docker build.
+
+The build stage creates the Python virtual environment and installs application dependencies.
+
+The final stage contains only the runtime components needed to execute WildTrace.
+
+The resulting image runs the application as a non-root user.
+
+The same application image can run different workloads.
+
+For example:
+
+```text
+WildTrace image
+      │
+      ├── FastAPI container
+      │
+      └── Celery worker container
+```
+
+The API runs:
+
+```text
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+while the worker runs:
+
+```text
+celery -A app.workers.celery_app.celery_app worker --loglevel=info
+```
+
+---
+
+# Continuous Integration
+
+WildTrace uses GitHub Actions for continuous integration.
+
+The pipeline validates application changes before a container image is published.
+
+```text
+Git Push / Pull Request
+          │
+          ▼
+     GitHub Actions
+          │
+          ├── Install dependencies
+          ├── Run Alembic migrations
+          ├── Ruff
+          ├── pip-audit
+          ├── Pytest
+          └── Coverage enforcement
+          │
+          ▼
+      Docker Build
+          │
+          ▼
+       Trivy Scan
+          │
+          ▼
+    Validated Image
+```
+
+A failed migration, linting check, dependency audit, test, coverage check, Docker build, or qualifying security scan prevents the pipeline from completing successfully.
+
+---
+
+# Container Registry
+
+Validated WildTrace images are published to **GitHub Container Registry (GHCR)**.
+
+The EC2 server therefore does not need to clone the repository and rebuild the application.
+
+Instead:
+
+```text
+Source Code
+     │
+     ▼
+GitHub Actions
+     │
+     ├── Test
+     ├── Validate
+     ├── Build
+     └── Scan
+     │
+     ▼
+GHCR
+     │
+     ▼
+AWS EC2
+```
+
+Each successful build is tagged with:
+
+```text
+latest
+<git-commit-sha>
+```
+
+For example:
+
+```text
+ghcr.io/<owner>/<repository>:latest
+ghcr.io/<owner>/<repository>:<commit-sha>
+```
+
+The `latest` tag identifies the most recently published image.
+
+The commit-SHA tag provides traceability between the deployed container image and the exact Git revision used to build it.
+
+This also provides the foundation for deployment rollback to a previously validated image.
+
+---
+
+# AWS Deployment
+
+WildTrace is currently deployed to an **Ubuntu 24.04 LTS EC2 instance**.
+
+Current EC2 environment:
+
+```text
+Operating System: Ubuntu 24.04 LTS
+Architecture:     x86_64
+Instance type:    t3.micro
+Compute:          2 vCPU
+Memory:           ~1 GiB
+Storage:          20 GiB gp3 EBS
+Swap:             1 GiB
+Container runtime: Docker Engine
+Orchestration:    Docker Compose
+```
+
+The deployment uses the Docker image published by the GitHub Actions pipeline to GHCR.
+
+---
+
+## Production Compose Architecture
+
+The EC2 deployment contains:
+
+```text
+Docker Compose
+│
+├── api
+│   └── GHCR WildTrace image
+│
+├── worker
+│   └── GHCR WildTrace image
+│
+├── db
+│   └── PostgreSQL 16 Alpine
+│
+└── redis
+    └── Redis 7 Alpine
+```
+
+Unlike the development environment, the deployment configuration:
+
+- does not build the application from source
+- does not mount application source directories
+- does not run the test database
+- pulls the validated WildTrace image from GHCR
+- persists PostgreSQL data using a Docker volume
+- uses restart policies for long-running services
+
+---
+
+## Deployment Configuration
+
+The production deployment uses a separate Compose configuration:
+
+```text
+compose.prod.yml
+```
+
+Application configuration and database credentials are provided through environment variables rather than being embedded directly into the Compose configuration.
+
+The production environment file is protected with restricted filesystem permissions and is not stored in the application repository.
+
+---
+
+## AWS Networking
+
+The EC2 instance runs inside an AWS VPC and uses an AWS Security Group as its network firewall.
+
+SSH access is restricted rather than exposing port `22` universally.
+
+PostgreSQL and Redis are not published directly to the host or the public Internet.
+
+```text
+Internet
+   │
+   ▼
+AWS Security Group
+   │
+   ▼
+EC2
+   │
+   ├── FastAPI
+   │
+   ├── PostgreSQL ── internal only
+   │
+   ├── Redis ─────── internal only
+   │
+   └── Celery
+```
+
+This prevents direct Internet access to the PostgreSQL and Redis services.
+
+---
+
+## Deployment Migrations
+
+Before starting the complete application stack, database migrations are applied using the application image:
+
+```bash
+docker compose -f compose.prod.yml run --rm api alembic upgrade head
+```
+
+The deployed database currently reports:
+
+```text
+e933e80caa48 (head)
+```
+
+This confirms that the deployed PostgreSQL schema is managed through the same Alembic migration history as the application source.
+
+---
+
+## Deployment Health Checks
+
+The deployed application exposes separate liveness and readiness endpoints.
+
+Application health:
+
+```bash
+curl http://localhost:8000/healthz
+```
+
+Response:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+Database readiness:
+
+```bash
+curl http://localhost:8000/readyz
+```
+
+Response:
+
+```json
+{
+  "status": "ready"
+}
+```
+
+PostgreSQL also uses a Docker health check before dependent application services are started.
+
+---
+
+## Deployment Resource Usage
+
+The complete application currently runs on a small `t3.micro` instance.
+
+The four application services have demonstrated low idle memory usage, with the API and Celery worker being the largest application containers.
+
+Because the instance provides approximately 1 GiB of RAM, a 1 GiB swap file is configured as additional protection against temporary memory pressure.
+
+The deployment currently demonstrates that the complete WildTrace stack can operate within a small cloud environment while resource usage remains observable through Linux and Docker tooling.
+
+---
+
+# Current Delivery Pipeline
+
+WildTrace currently implements the following delivery path:
+
+```text
+Developer
+    │
+    │ git push
+    ▼
+GitHub
+    │
+    ▼
+GitHub Actions
+    │
+    ├── Alembic migrations
+    ├── Ruff
+    ├── pip-audit
+    ├── Pytest
+    └── Coverage
+    │
+    ▼
+Docker Build
+    │
+    ▼
+Trivy Scan
+    │
+    ▼
+GHCR
+    │
+    ├── :latest
+    └── :<commit-sha>
+    │
+    │ docker pull
+    ▼
+AWS EC2
+    │
+    ▼
+Docker Compose
+    │
+    ├── FastAPI
+    ├── Celery
+    ├── PostgreSQL
+    └── Redis
+```
+
+At the current stage, CI and container publishing are automated.
+
+The AWS deployment itself is currently performed manually from the validated GHCR artifact.
+
+Automating this final deployment step will turn the existing pipeline into a complete CI/CD workflow.
+
+---
+
+# Project Structure
 
 ```text
 wildtrace/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
+│
 ├── alembic/
 │   ├── versions/
+│   │   └── e933e80caa48_create_sightings_table.py
 │   ├── env.py
 │   └── script.py.mako
+│
 ├── app/
 │   ├── routers/
 │   │   └── sightings.py
+│   │
 │   ├── workers/
 │   │   ├── celery_app.py
 │   │   └── tasks.py
+│   │
 │   ├── config.py
 │   ├── database.py
 │   ├── main.py
 │   ├── models.py
 │   └── schemas.py
+│
 ├── tests/
 │   ├── conftest.py
 │   └── test_sightings.py
+│
 ├── alembic.ini
 ├── docker-compose.yml
 ├── Dockerfile
@@ -353,35 +821,194 @@ wildtrace/
 └── requirements-dev.txt
 ```
 
-## Development Status
+---
 
-WildTrace is under active development.
+# Development Status
 
-The current foundation includes:
+## Implemented
 
-- REST API with CRUD operations and filtering
+### Backend
+
+- REST API
+- CRUD operations
+- Filtering
+- Pagination
+- Pydantic validation
 - PostgreSQL persistence
-- Alembic database migrations
-- Redis and Celery background processing
-- Multi-service Docker Compose environment
-- Automated testing and coverage enforcement
-- Linting and dependency auditing
-- GitHub Actions CI
-- Automated Docker image builds
+- SQLAlchemy ORM
+- Health and readiness endpoints
 
-### DevOps Roadmap
+### Database
 
-Planned next steps:
+- PostgreSQL 16
+- Alembic migrations
+- Persistent deployment volume
+- Database health checks
 
-1. **Container security scanning** — scan built Docker images for known vulnerabilities using Trivy.
-2. **Container registry** — publish validated, versioned images to GitHub Container Registry (GHCR).
-3. **Deployment** — run WildTrace in a remote/cloud environment with an automated deployment workflow.
-4. **Kubernetes** — deploy and manage the containerized application as Kubernetes workloads.
-5. **Terraform** — provision infrastructure using Infrastructure as Code.
-6. **Observability** — introduce application and infrastructure monitoring with Prometheus and Grafana.
+### Background Processing
 
-## Purpose
+- Redis broker
+- Celery worker
+- Asynchronous task dispatch
+- Celery mocking during API tests
 
-WildTrace was created as a backend and DevOps engineering portfolio project demonstrating how a Python API can progress beyond basic CRUD functionality into a tested, containerized, migration-managed, asynchronously processed, and continuously validated application.
+### Testing & Quality
 
-The long-term goal is to demonstrate the full path from application development to CI/CD, container security, deployment, infrastructure management, orchestration, and observability.
+- Pytest
+- Automated API tests
+- Coverage enforcement
+- Ruff linting
+
+### Security
+
+- pip-audit
+- Trivy container scanning
+- Non-root application container
+- Restricted EC2 SSH access
+- PostgreSQL not publicly exposed
+- Redis not publicly exposed
+- Deployment credentials separated from Compose configuration
+
+### Containers
+
+- Multi-stage Dockerfile
+- Docker Compose development environment
+- Separate deployment Compose configuration
+- GHCR image publishing
+- `latest` image tagging
+- Git commit SHA image tagging
+
+### AWS
+
+- Ubuntu EC2 deployment
+- EBS storage
+- AWS VPC networking
+- Security Group configuration
+- Docker installation
+- Docker Compose deployment
+- Persistent PostgreSQL storage
+- Deployment migrations
+- Application health verification
+
+---
+
+# DevOps Roadmap
+
+## 1. Public API Access
+
+Expose the API through controlled network rules and verify the deployed API externally.
+
+## 2. Reverse Proxy and HTTPS
+
+Introduce a reverse proxy and TLS so the API can be accessed through standard HTTP/HTTPS ports instead of exposing the application server directly.
+
+## 3. Continuous Deployment
+
+Extend GitHub Actions so successful builds can automatically deploy validated GHCR images to AWS.
+
+The target pipeline is:
+
+```text
+Push
+  ↓
+Test
+  ↓
+Scan
+  ↓
+Build
+  ↓
+Publish
+  ↓
+Deploy
+  ↓
+Health Check
+```
+
+## 4. Deployment Versioning and Rollback
+
+Deploy immutable commit-SHA image versions rather than depending solely on `latest`.
+
+This will allow a deployment to be traced to an exact Git commit and enable rollback to previously validated images.
+
+## 5. Infrastructure as Code
+
+Introduce **Terraform** to provision and manage AWS infrastructure declaratively.
+
+Potential resources include:
+
+- EC2
+- Security Groups
+- networking
+- storage
+- IAM configuration
+
+## 6. Kubernetes
+
+Move the containerized services toward Kubernetes workloads and learn:
+
+- Pods
+- Deployments
+- Services
+- ConfigMaps
+- Secrets
+- health probes
+- persistent storage
+- rolling deployments
+
+## 7. Observability
+
+Add monitoring and metrics using:
+
+- Prometheus
+- Grafana
+
+Potential metrics include:
+
+- API request rate
+- response latency
+- HTTP errors
+- CPU utilization
+- memory utilization
+- container health
+- Celery task activity
+- PostgreSQL availability
+
+---
+
+# Purpose
+
+WildTrace is designed to demonstrate more than CRUD API development.
+
+The project follows the evolution of an application through multiple software delivery stages:
+
+```text
+Application Development
+          ↓
+Automated Testing
+          ↓
+Database Migrations
+          ↓
+Containerization
+          ↓
+Security Scanning
+          ↓
+Continuous Integration
+          ↓
+Artifact Versioning
+          ↓
+Container Registry
+          ↓
+Cloud Deployment
+          ↓
+Continuous Deployment
+          ↓
+Infrastructure as Code
+          ↓
+Container Orchestration
+          ↓
+Observability
+```
+
+The current implementation demonstrates a working backend application with PostgreSQL persistence, asynchronous processing, automated testing, security validation, versioned Docker artifacts, and an operational AWS deployment.
+
+The next phase focuses on safely exposing the API, automating deployments, improving deployment versioning and rollback, and moving infrastructure management toward Terraform and Kubernetes.
