@@ -2,9 +2,9 @@
 
 WildTrace is a containerized REST API for recording, managing, and retrieving wildlife sightings.
 
-The project is built as a backend and DevOps portfolio project demonstrating the complete path from application development to automated testing, containerization, security scanning, container publishing, and cloud deployment.
+The project is built as a backend and DevOps portfolio project demonstrating the path from application development to automated testing, containerization, security scanning, container publishing, cloud deployment, and infrastructure management.
 
-WildTrace is currently deployed on **AWS EC2**, where the API, PostgreSQL database, Redis broker, and Celery worker run as separate Docker containers.
+WildTrace is currently deployed on **AWS EC2**. The deployed environment runs FastAPI, PostgreSQL, Redis, and Celery as Docker containers, with **Nginx acting as the public reverse proxy**.
 
 ---
 
@@ -44,11 +44,15 @@ WildTrace is currently deployed on **AWS EC2**, where the API, PostgreSQL databa
 - GitHub Container Registry (GHCR)
 - AWS EC2
 - AWS EBS
+- AWS VPC
 - AWS Security Groups
+- AWS IAM
+- AWS Systems Manager (SSM)
+- Nginx
 
 ---
 
-## Features
+# Features
 
 WildTrace currently supports:
 
@@ -74,39 +78,91 @@ WildTrace currently supports:
 - Automated Docker image builds
 - Versioned container publishing
 - AWS cloud deployment
+- Nginx reverse proxy
+- Restricted application-port exposure
+- AWS Systems Manager access
 
 ---
 
 # Architecture
 
-The deployed WildTrace architecture currently consists of four containerized services running on an AWS EC2 instance.
+The deployed WildTrace architecture currently consists of four application containers running on an AWS EC2 instance behind an Nginx reverse proxy.
 
 ```text
                          Internet
                             │
                             ▼
-                       AWS EC2
+                   AWS Security Group
                             │
-                      Docker Engine
+                         TCP :80
                             │
-           ┌────────────────┼────────────────┐
-           │                │                │
-           ▼                ▼                ▼
-       FastAPI          PostgreSQL         Redis
-           │                                 │
-           │                                 ▼
-           └──────────────────────────► Celery Worker
+                            ▼
+                         Nginx
+                            │
+                            │ localhost
+                            ▼
+                    127.0.0.1:8000
+                            │
+                            ▼
+                         FastAPI
+                         /     \
+                        /       \
+                       ▼         ▼
+                 PostgreSQL    Redis
+                                  │
+                                  ▼
+                            Celery Worker
 ```
 
-The FastAPI application handles HTTP requests and communicates with PostgreSQL through SQLAlchemy.
+Nginx is the public entry point to the application.
+
+FastAPI itself is not directly exposed to the Internet. Docker binds the API to:
+
+```text
+127.0.0.1:8000
+```
+
+which means only processes running on the EC2 host, such as Nginx, can access the application port directly.
+
+PostgreSQL and Redis do not publish host ports and remain accessible only through the internal Docker network.
+
+---
+
+# Request Flow
+
+A normal API request follows:
+
+```text
+Client
+  │
+  ▼
+Internet
+  │
+  ▼
+AWS Security Group
+  │
+  ▼
+Nginx :80
+  │
+  ▼
+FastAPI :8000
+  │
+  ▼
+SQLAlchemy
+  │
+  ▼
+PostgreSQL
+```
 
 When a sighting is created:
 
-1. FastAPI validates the incoming request.
-2. SQLAlchemy persists the sighting to PostgreSQL.
-3. The database transaction is committed.
-4. FastAPI sends a background task to Redis.
-5. The Celery worker consumes and processes the task.
+1. Nginx receives the public HTTP request.
+2. Nginx forwards it to FastAPI on `127.0.0.1:8000`.
+3. FastAPI validates the request using Pydantic.
+4. SQLAlchemy persists the sighting to PostgreSQL.
+5. The database transaction is committed.
+6. FastAPI sends a background task to Redis.
+7. The Celery worker receives and processes the task.
 
 The API and Celery worker use the same WildTrace Docker image but run as separate containers with different commands and responsibilities.
 
@@ -147,6 +203,8 @@ Example response:
 }
 ```
 
+---
+
 ## Readiness
 
 ```http
@@ -171,16 +229,16 @@ Example response:
 POST /api/v1/sightings
 ```
 
-Example request:
+Example:
 
 ```json
 {
   "species": "Mediterranean monk seal",
   "latitude": 37.75,
   "longitude": 26.98,
-  "observed_at": "2026-10-01T15:30:00Z",
-  "photo_url": "https://example.com/monk-seal.jpg",
-  "notes": "Observed swimming near the coastline."
+  "observed_at": "2026-10-03T12:00:00Z",
+  "photo_url": null,
+  "notes": "Observed near the coastline."
 }
 ```
 
@@ -270,13 +328,13 @@ git clone <repository-url>
 cd wildtrace
 ```
 
-Build and start the local environment:
+Build and start the development environment:
 
 ```bash
 docker compose up --build -d
 ```
 
-The local Docker Compose environment includes:
+The local environment contains:
 
 ```text
 api
@@ -286,13 +344,13 @@ redis
 worker
 ```
 
-Check the services:
+Check the containers:
 
 ```bash
 docker compose ps
 ```
 
-The API is available locally at:
+The development API is available at:
 
 ```text
 http://localhost:8000
@@ -317,7 +375,7 @@ POST /api/v1/sightings
        FastAPI
           │
           ▼
-      PostgreSQL
+     PostgreSQL
           │
        commit
           │
@@ -330,7 +388,7 @@ POST /api/v1/sightings
 
 The sighting is committed to PostgreSQL before the background task is queued. This prevents the worker from receiving an ID for a database record that has not yet been committed.
 
-During automated API tests, Celery task dispatch is mocked. This keeps the API test suite independent of Redis and Celery while still verifying that the expected background task is dispatched.
+During automated API tests, Celery task dispatch is mocked. This keeps the API test suite independent of Redis and Celery while still verifying that the expected task is dispatched.
 
 ---
 
@@ -340,7 +398,7 @@ WildTrace uses Alembic for database schema management.
 
 The application does not rely on automatic table creation during startup.
 
-Apply all migrations:
+Apply migrations locally:
 
 ```bash
 docker compose exec api alembic upgrade head
@@ -352,7 +410,7 @@ Check the current migration:
 docker compose exec api alembic current
 ```
 
-Create a migration after modifying the SQLAlchemy models:
+Create a new migration:
 
 ```bash
 docker compose exec api alembic revision --autogenerate -m "describe change"
@@ -370,7 +428,7 @@ The initial sightings migration is:
 e933e80caa48
 ```
 
-Database migrations are also executed during continuous integration.
+Database migrations are also validated during continuous integration.
 
 ---
 
@@ -378,7 +436,7 @@ Database migrations are also executed during continuous integration.
 
 WildTrace includes automated tests covering the API and its main behavior.
 
-Current test coverage includes:
+Current coverage includes:
 
 - Sighting creation
 - Sighting retrieval
@@ -390,7 +448,7 @@ Current test coverage includes:
 - Health endpoint behavior
 - Celery task dispatch
 
-Run the tests:
+Run tests:
 
 ```bash
 pytest -v
@@ -402,7 +460,7 @@ Run tests with coverage:
 pytest -v --cov=app --cov-report=term-missing
 ```
 
-The CI pipeline requires a minimum of:
+The CI pipeline enforces a minimum of:
 
 ```text
 85% coverage
@@ -414,7 +472,7 @@ The CI pipeline requires a minimum of:
 
 WildTrace uses Ruff for automated Python linting.
 
-Run it locally:
+Run locally:
 
 ```bash
 ruff check .
@@ -426,7 +484,7 @@ Ruff is also executed automatically by GitHub Actions.
 
 # Security
 
-WildTrace performs security checks at both the Python dependency and container image levels.
+WildTrace performs security checks at both the dependency and container-image levels.
 
 ## Dependency Scanning
 
@@ -440,11 +498,11 @@ pip-audit -r requirements.txt
 
 The final Docker image is scanned using **Trivy**.
 
-Trivy checks components contained in the final image, including operating-system packages and application dependencies, for known vulnerabilities.
+Trivy checks the components contained in the final image, including operating-system packages and application dependencies, for known vulnerabilities.
 
 The CI pipeline is configured to fail when qualifying critical vulnerabilities are detected.
 
-This means the container image is security-scanned before being published for deployment.
+The container is therefore security-scanned before being published for deployment.
 
 ---
 
@@ -454,13 +512,11 @@ WildTrace uses a multi-stage Docker build.
 
 The build stage creates the Python virtual environment and installs application dependencies.
 
-The final stage contains only the runtime components needed to execute WildTrace.
+The final stage contains the runtime components required to execute WildTrace.
 
 The resulting image runs the application as a non-root user.
 
-The same application image can run different workloads.
-
-For example:
+The same application image runs different workloads:
 
 ```text
 WildTrace image
@@ -476,19 +532,19 @@ The API runs:
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-while the worker runs:
+The Celery worker runs:
 
 ```text
 celery -A app.workers.celery_app.celery_app worker --loglevel=info
 ```
+
+For the small production EC2 environment, worker concurrency can be limited to reduce memory consumption.
 
 ---
 
 # Continuous Integration
 
 WildTrace uses GitHub Actions for continuous integration.
-
-The pipeline validates application changes before a container image is published.
 
 ```text
 Git Push / Pull Request
@@ -510,7 +566,7 @@ Git Push / Pull Request
        Trivy Scan
           │
           ▼
-    Validated Image
+     Publish to GHCR
 ```
 
 A failed migration, linting check, dependency audit, test, coverage check, Docker build, or qualifying security scan prevents the pipeline from completing successfully.
@@ -521,9 +577,7 @@ A failed migration, linting check, dependency audit, test, coverage check, Docke
 
 Validated WildTrace images are published to **GitHub Container Registry (GHCR)**.
 
-The EC2 server therefore does not need to clone the repository and rebuild the application.
-
-Instead:
+The EC2 server therefore does not need to clone and compile the application source for deployment.
 
 ```text
 Source Code
@@ -537,13 +591,13 @@ GitHub Actions
      └── Scan
      │
      ▼
-GHCR
+    GHCR
      │
      ▼
-AWS EC2
+  AWS EC2
 ```
 
-Each successful build is tagged with:
+Successful builds are tagged with:
 
 ```text
 latest
@@ -557,88 +611,168 @@ ghcr.io/<owner>/<repository>:latest
 ghcr.io/<owner>/<repository>:<commit-sha>
 ```
 
-The `latest` tag identifies the most recently published image.
+The commit-SHA tag provides traceability between a Docker artifact and the exact Git revision used to build it.
 
-The commit-SHA tag provides traceability between the deployed container image and the exact Git revision used to build it.
-
-This also provides the foundation for deployment rollback to a previously validated image.
+This provides the foundation for immutable deployments and rollback.
 
 ---
 
 # AWS Deployment
 
-WildTrace is currently deployed to an **Ubuntu 24.04 LTS EC2 instance**.
+WildTrace is currently deployed on an **Ubuntu 24.04 LTS EC2 instance**.
 
-Current EC2 environment:
+Current environment:
 
 ```text
-Operating System: Ubuntu 24.04 LTS
-Architecture:     x86_64
-Instance type:    t3.micro
-Compute:          2 vCPU
-Memory:           ~1 GiB
-Storage:          20 GiB gp3 EBS
-Swap:             1 GiB
+Operating System:  Ubuntu 24.04 LTS
+Architecture:      x86_64
+Instance type:     t3.micro
+Compute:           2 vCPU
+Memory:            ~1 GiB
+Storage:           20 GiB gp3 EBS
+Swap:              1 GiB
 Container runtime: Docker Engine
-Orchestration:    Docker Compose
+Orchestration:     Docker Compose
+Reverse proxy:     Nginx
 ```
 
-The deployment uses the Docker image published by the GitHub Actions pipeline to GHCR.
+The deployment uses Docker images produced by the GitHub Actions pipeline and published to GHCR.
+
+The application source is developed locally rather than directly on the EC2 server.
 
 ---
 
-## Production Compose Architecture
+# Production Docker Compose
 
-The EC2 deployment contains:
-
-```text
-Docker Compose
-│
-├── api
-│   └── GHCR WildTrace image
-│
-├── worker
-│   └── GHCR WildTrace image
-│
-├── db
-│   └── PostgreSQL 16 Alpine
-│
-└── redis
-    └── Redis 7 Alpine
-```
-
-Unlike the development environment, the deployment configuration:
-
-- does not build the application from source
-- does not mount application source directories
-- does not run the test database
-- pulls the validated WildTrace image from GHCR
-- persists PostgreSQL data using a Docker volume
-- uses restart policies for long-running services
-
----
-
-## Deployment Configuration
-
-The production deployment uses a separate Compose configuration:
+Production deployment configuration is stored separately in:
 
 ```text
 compose.prod.yml
 ```
 
-Application configuration and database credentials are provided through environment variables rather than being embedded directly into the Compose configuration.
+Unlike the development environment, production:
 
-The production environment file is protected with restricted filesystem permissions and is not stored in the application repository.
+- does not build the application from source
+- does not mount application source directories
+- does not run the test database
+- pulls validated application images from GHCR
+- persists PostgreSQL data using a Docker volume
+- uses restart policies
+- keeps PostgreSQL internal
+- keeps Redis internal
+- binds FastAPI only to EC2 localhost
+
+The production configuration is version-controlled in the Git repository.
+
+Secrets are not stored in `compose.prod.yml`.
 
 ---
 
-## AWS Networking
+# Deployment Configuration
 
-The EC2 instance runs inside an AWS VPC and uses an AWS Security Group as its network firewall.
+Database credentials are supplied through environment variables.
 
-SSH access is restricted rather than exposing port `22` universally.
+The real production `.env` file exists on the EC2 server and is not committed to Git.
 
-PostgreSQL and Redis are not published directly to the host or the public Internet.
+Example variables:
+
+```text
+POSTGRES_USER
+POSTGRES_PASSWORD
+POSTGRES_DB
+```
+
+The application image supports a configurable image tag:
+
+```text
+${IMAGE_TAG:-latest}
+```
+
+This allows the same Compose configuration to run either the latest image or an exact Git commit image.
+
+For example:
+
+```bash
+IMAGE_TAG=<commit-sha> docker compose -f compose.prod.yml up -d
+```
+
+This forms the basis for immutable, traceable deployments.
+
+---
+
+# Production Networking
+
+WildTrace uses multiple layers of network isolation.
+
+## AWS Security Group
+
+The EC2 Security Group acts as the cloud-level firewall.
+
+Public HTTP traffic is accepted on:
+
+```text
+TCP 80
+```
+
+SSH access is restricted rather than universally exposed.
+
+PostgreSQL and Redis are not exposed publicly.
+
+---
+
+## Nginx Reverse Proxy
+
+Nginx runs directly on the EC2 host and acts as the public application entry point.
+
+```text
+Internet
+   │
+   ▼
+TCP :80
+   │
+   ▼
+Nginx
+   │
+   ▼
+127.0.0.1:8000
+   │
+   ▼
+FastAPI
+```
+
+A request such as:
+
+```text
+http://<server>/healthz
+```
+
+is received by Nginx and forwarded internally to FastAPI.
+
+---
+
+## FastAPI Port Isolation
+
+Docker binds the FastAPI container using:
+
+```text
+127.0.0.1:8000:8000
+```
+
+rather than:
+
+```text
+0.0.0.0:8000:8000
+```
+
+Therefore port `8000` is not directly reachable through the EC2 network interface.
+
+This provides an additional layer of protection beyond the AWS Security Group.
+
+---
+
+## Internal Services
+
+PostgreSQL and Redis have no published host ports.
 
 ```text
 Internet
@@ -647,47 +781,49 @@ Internet
 AWS Security Group
    │
    ▼
-EC2
+Nginx :80
    │
-   ├── FastAPI
+   ▼
+FastAPI
    │
-   ├── PostgreSQL ── internal only
+   ├──────────────► PostgreSQL
    │
-   ├── Redis ─────── internal only
-   │
-   └── Celery
+   └──► Redis
+          │
+          ▼
+     Celery Worker
 ```
 
-This prevents direct Internet access to the PostgreSQL and Redis services.
+PostgreSQL and Redis communicate with application containers over the Docker network.
 
 ---
 
-## Deployment Migrations
+# Deployment Migrations
 
-Before starting the complete application stack, database migrations are applied using the application image:
+Before starting a new application version, Alembic migrations can be executed using the application image:
 
 ```bash
 docker compose -f compose.prod.yml run --rm api alembic upgrade head
 ```
 
-The deployed database currently reports:
+The deployed database currently uses the migration:
 
 ```text
 e933e80caa48 (head)
 ```
 
-This confirms that the deployed PostgreSQL schema is managed through the same Alembic migration history as the application source.
+This confirms that the production database schema is controlled by the same migration history stored in Git.
 
 ---
 
-## Deployment Health Checks
+# Deployment Verification
 
-The deployed application exposes separate liveness and readiness endpoints.
+The deployed application has been tested externally.
 
-Application health:
+Public health request:
 
 ```bash
-curl http://localhost:8000/healthz
+curl http://<server>/healthz
 ```
 
 Response:
@@ -698,10 +834,10 @@ Response:
 }
 ```
 
-Database readiness:
+The readiness endpoint confirms database connectivity:
 
 ```bash
-curl http://localhost:8000/readyz
+curl http://<server>/readyz
 ```
 
 Response:
@@ -712,25 +848,116 @@ Response:
 }
 ```
 
-PostgreSQL also uses a Docker health check before dependent application services are started.
+A real sighting has also been successfully submitted through the public API.
+
+The request:
+
+1. reached Nginx
+2. was forwarded to FastAPI
+3. passed Pydantic validation
+4. was persisted to PostgreSQL
+5. generated a Redis-backed Celery task
+6. was received by the Celery worker
+7. completed successfully
+
+This verifies the complete deployed application path.
 
 ---
 
-## Deployment Resource Usage
+# Resource Management
 
-The complete application currently runs on a small `t3.micro` instance.
+WildTrace currently runs on a small `t3.micro` instance with approximately 1 GiB RAM.
 
-The four application services have demonstrated low idle memory usage, with the API and Celery worker being the largest application containers.
+A 1 GiB swap file is configured as protection against temporary memory pressure.
 
-Because the instance provides approximately 1 GiB of RAM, a 1 GiB swap file is configured as additional protection against temporary memory pressure.
+The deployed services have demonstrated low idle container memory usage, with FastAPI and Celery being the largest application containers.
 
-The deployment currently demonstrates that the complete WildTrace stack can operate within a small cloud environment while resource usage remains observable through Linux and Docker tooling.
+Resource usage can be inspected with:
+
+```bash
+free -h
+```
+
+and:
+
+```bash
+docker stats --no-stream
+```
+
+The small deployment environment makes resource consumption an explicit part of the infrastructure design.
+
+---
+
+# AWS Systems Manager
+
+The EC2 instance is registered with **AWS Systems Manager (SSM)**.
+
+The SSM Agent runs on the EC2 instance and communicates with AWS Systems Manager.
+
+The instance has a dedicated IAM role with the permissions required to operate as an SSM managed node.
+
+This provides an alternative administrative path to traditional SSH:
+
+```text
+Traditional access
+
+Developer
+    │
+    │ SSH + private key
+    ▼
+EC2 :22
+```
+
+versus:
+
+```text
+SSM access
+
+AWS-authenticated user
+        │
+        ▼
+AWS Systems Manager
+        │
+        ▼
+SSM Agent
+        │
+        ▼
+EC2
+```
+
+A Session Manager connection has been successfully established to the WildTrace EC2 instance.
+
+Session Manager provides browser-based shell access without requiring the user to directly authenticate to the server using the EC2 SSH private key.
+
+This infrastructure will also provide the foundation for executing deployment commands through AWS rather than exposing SSH access to GitHub-hosted CI runners.
+
+---
+
+# IAM
+
+WildTrace currently uses an EC2 IAM role for Systems Manager integration.
+
+The role allows the EC2 instance to authenticate to AWS Systems Manager and operate as a managed node.
+
+The important distinction is:
+
+```text
+IAM Role
+   │
+   └── defines what an AWS identity/resource is allowed to do
+
+SSM
+   │
+   └── provides remote management of the EC2 instance
+```
+
+The next deployment phase will introduce a separate, narrowly scoped identity for GitHub Actions.
 
 ---
 
 # Current Delivery Pipeline
 
-WildTrace currently implements the following delivery path:
+The current automated path is:
 
 ```text
 Developer
@@ -742,7 +969,7 @@ GitHub
     ▼
 GitHub Actions
     │
-    ├── Alembic migrations
+    ├── Alembic validation
     ├── Ruff
     ├── pip-audit
     ├── Pytest
@@ -759,25 +986,133 @@ GHCR
     │
     ├── :latest
     └── :<commit-sha>
-    │
-    │ docker pull
-    ▼
-AWS EC2
-    │
-    ▼
-Docker Compose
-    │
-    ├── FastAPI
-    ├── Celery
-    ├── PostgreSQL
-    └── Redis
 ```
 
-At the current stage, CI and container publishing are automated.
+Deployment currently continues manually:
 
-The AWS deployment itself is currently performed manually from the validated GHCR artifact.
+```text
+GHCR
+  │
+  ▼
+AWS EC2
+  │
+  ▼
+Docker Compose
+  │
+  ├── FastAPI
+  ├── Celery
+  ├── PostgreSQL
+  └── Redis
+```
 
-Automating this final deployment step will turn the existing pipeline into a complete CI/CD workflow.
+Therefore:
+
+```text
+CI                 ✅ Automated
+Image publishing   ✅ Automated
+Cloud deployment   ✅ Implemented
+CD                 🚧 In progress
+```
+
+The project should not yet be described as having completed Continuous Deployment.
+
+---
+
+# Planned Continuous Deployment Architecture
+
+The next stage is to allow GitHub Actions to securely request deployments through AWS.
+
+The planned architecture is:
+
+```text
+git push main
+      │
+      ▼
+GitHub Actions
+      │
+      ├── Test
+      ├── Lint
+      ├── Audit
+      ├── Build
+      └── Scan
+      │
+      ▼
+GHCR
+      │
+      │ commit-SHA image
+      ▼
+GitHub → AWS Authentication
+      │
+      ▼
+AWS Systems Manager
+      │
+      ▼
+EC2
+      │
+      ├── Pull exact image
+      ├── Run Alembic migrations
+      ├── Recreate application containers
+      └── Run health check
+```
+
+The intended authentication mechanism is **GitHub OIDC with AWS IAM**.
+
+This allows GitHub Actions to obtain temporary AWS credentials instead of storing permanent AWS access keys in GitHub.
+
+The OIDC/CD configuration is not yet complete.
+
+---
+
+# Development vs Deployment
+
+Application development is performed on the developer workstation.
+
+```text
+LOCAL COMPUTER
+────────────────────
+Python development
+FastAPI changes
+Tests
+Alembic migrations
+Docker configuration
+Infrastructure configuration
+        │
+        │ git push
+        ▼
+```
+
+GitHub acts as the source-code and CI platform:
+
+```text
+GITHUB
+────────────────────
+Repository
+GitHub Actions
+Testing
+Security validation
+Container building
+        │
+        ▼
+GHCR
+```
+
+AWS is the runtime environment:
+
+```text
+AWS EC2
+────────────────────
+Nginx
+Docker Engine
+FastAPI
+PostgreSQL
+Redis
+Celery
+SSM Agent
+```
+
+Normal application development is **not performed directly on the EC2 server**.
+
+The goal of Continuous Deployment is to further reduce the need for manual server administration during normal releases.
 
 ---
 
@@ -814,6 +1149,7 @@ wildtrace/
 │   └── test_sightings.py
 │
 ├── alembic.ini
+├── compose.prod.yml
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml
@@ -842,7 +1178,7 @@ wildtrace/
 
 - PostgreSQL 16
 - Alembic migrations
-- Persistent deployment volume
+- Persistent production volume
 - Database health checks
 
 ### Background Processing
@@ -856,7 +1192,7 @@ wildtrace/
 
 - Pytest
 - Automated API tests
-- Coverage enforcement
+- 85% minimum coverage enforcement
 - Ruff linting
 
 ### Security
@@ -864,19 +1200,23 @@ wildtrace/
 - pip-audit
 - Trivy container scanning
 - Non-root application container
-- Restricted EC2 SSH access
+- Restricted SSH access
 - PostgreSQL not publicly exposed
 - Redis not publicly exposed
+- FastAPI port not publicly exposed
+- Nginx as public application boundary
 - Deployment credentials separated from Compose configuration
 
 ### Containers
 
 - Multi-stage Dockerfile
 - Docker Compose development environment
-- Separate deployment Compose configuration
+- Separate production Compose configuration
+- Version-controlled production configuration
 - GHCR image publishing
 - `latest` image tagging
 - Git commit SHA image tagging
+- Configurable production `IMAGE_TAG`
 
 ### AWS
 
@@ -884,67 +1224,126 @@ wildtrace/
 - EBS storage
 - AWS VPC networking
 - Security Group configuration
-- Docker installation
+- Docker Engine
 - Docker Compose deployment
 - Persistent PostgreSQL storage
 - Deployment migrations
-- Application health verification
+- Public application verification
+- Nginx reverse proxy
+- IAM instance role
+- SSM Agent registration
+- Systems Manager Session Manager access
+
+### CI
+
+- GitHub Actions
+- Automated tests
+- Automated migrations
+- Automated linting
+- Dependency auditing
+- Container build
+- Container security scanning
+- GHCR publishing
 
 ---
 
 # DevOps Roadmap
 
-## 1. Public API Access
+## 1. Continuous Deployment
 
-Expose the API through controlled network rules and verify the deployed API externally.
+Complete automated deployment from GitHub Actions to AWS.
 
-## 2. Reverse Proxy and HTTPS
-
-Introduce a reverse proxy and TLS so the API can be accessed through standard HTTP/HTTPS ports instead of exposing the application server directly.
-
-## 3. Continuous Deployment
-
-Extend GitHub Actions so successful builds can automatically deploy validated GHCR images to AWS.
-
-The target pipeline is:
+Planned flow:
 
 ```text
-Push
-  ↓
-Test
-  ↓
-Scan
-  ↓
+Push to main
+      ↓
+CI
+      ↓
 Build
-  ↓
-Publish
-  ↓
-Deploy
-  ↓
+      ↓
+Security Scan
+      ↓
+GHCR
+      ↓
+AWS Authentication
+      ↓
+SSM Deployment
+      ↓
+Alembic Migration
+      ↓
+Container Update
+      ↓
 Health Check
 ```
 
-## 4. Deployment Versioning and Rollback
+---
 
-Deploy immutable commit-SHA image versions rather than depending solely on `latest`.
+## 2. GitHub OIDC + AWS IAM
 
-This will allow a deployment to be traced to an exact Git commit and enable rollback to previously validated images.
+Configure GitHub Actions to authenticate to AWS using OpenID Connect.
+
+The goal is to use short-lived credentials rather than storing permanent AWS access keys.
+
+The deployment IAM role should follow least-privilege principles.
+
+---
+
+## 3. Immutable Deployment and Rollback
+
+Deploy exact commit-SHA image versions rather than relying solely on `latest`.
+
+For example:
+
+```text
+ghcr.io/<owner>/<repository>:<commit-sha>
+```
+
+This will make each deployment traceable to an exact Git commit and provide a clean rollback mechanism.
+
+---
+
+## 4. HTTPS
+
+The current deployment uses HTTP through Nginx.
+
+HTTPS is intentionally deferred until a domain or suitable DNS name is available.
+
+Future architecture:
+
+```text
+Internet
+   │
+   ▼
+HTTPS :443
+   │
+   ▼
+Nginx + TLS
+   │
+   ▼
+FastAPI
+```
+
+---
 
 ## 5. Infrastructure as Code
 
-Introduce **Terraform** to provision and manage AWS infrastructure declaratively.
+Introduce **Terraform** to provision AWS infrastructure declaratively.
 
 Potential resources include:
 
 - EC2
 - Security Groups
 - networking
+- IAM roles
 - storage
-- IAM configuration
+- Systems Manager-related configuration
+
+---
 
 ## 6. Kubernetes
 
-Move the containerized services toward Kubernetes workloads and learn:
+Move the containerized application toward Kubernetes workloads and learn:
 
 - Pods
 - Deployments
@@ -955,9 +1354,11 @@ Move the containerized services toward Kubernetes workloads and learn:
 - persistent storage
 - rolling deployments
 
+---
+
 ## 7. Observability
 
-Add monitoring and metrics using:
+Introduce monitoring and metrics using:
 
 - Prometheus
 - Grafana
@@ -1000,6 +1401,10 @@ Container Registry
           ↓
 Cloud Deployment
           ↓
+Reverse Proxy / Network Hardening
+          ↓
+Secure Cloud Administration
+          ↓
 Continuous Deployment
           ↓
 Infrastructure as Code
@@ -1009,6 +1414,6 @@ Container Orchestration
 Observability
 ```
 
-The current implementation demonstrates a working backend application with PostgreSQL persistence, asynchronous processing, automated testing, security validation, versioned Docker artifacts, and an operational AWS deployment.
+The current implementation demonstrates a working backend application with PostgreSQL persistence, asynchronous Redis/Celery processing, automated testing, database migrations, security validation, versioned Docker artifacts, GHCR publishing, an operational AWS EC2 deployment, Nginx reverse proxying, network isolation, IAM-based EC2 permissions, and AWS Systems Manager access.
 
-The next phase focuses on safely exposing the API, automating deployments, improving deployment versioning and rollback, and moving infrastructure management toward Terraform and Kubernetes.
+The next phase focuses on completing Continuous Deployment using GitHub Actions, AWS IAM, GitHub OIDC, and Systems Manager, followed by immutable deployments and rollback support.
